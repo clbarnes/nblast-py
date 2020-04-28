@@ -2,12 +2,11 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import NamedTuple
-import json
 
 import numpy as np
 from tqdm import trange
 import pandas as pd
-from scipy.spatial import cKDTree
+from scipy.spatial import cKDTree as KDTree
 
 DOTPROPS = Path("data/dotprops")
 fpaths = sorted(DOTPROPS.glob("*.csv"))
@@ -66,20 +65,20 @@ def make_tan_alpha_svd(neighbors):
 def make_dotprops(df: pd.DataFrame, k=N_NEIGHBORS):
     point_headers = ["point_" + dim for dim in "xyz"]
     points = df[point_headers].to_numpy()
-    tree = cKDTree(points)
+    tree = KDTree(points)
     alpha = []
     tangents = []
     for idx, row in enumerate(points):
-        neighbor_idxs = tree.query(row, k=k)[1]  # (k, 3)
+        _, neighbor_idxs = tree.query(row, k=k)
         assert len(neighbor_idxs) == k
         neighbors = points[neighbor_idxs]
-        tangent, a = make_tan_alpha_svd(neighbors)
-        tangent2, a2 = make_tan_alpha(neighbors)
-        assert (
-            np.allclose(tangent, tangent2) or
-            np.allclose(tangent, -1 * tangent2)
-        )
-        assert np.allclose(a, a2)
+        # tangent, a = make_tan_alpha_svd(neighbors)
+        tangent, a = make_tan_alpha(neighbors)
+        # assert (
+        #     np.allclose(tangent, tangent2) or
+        #     np.allclose(tangent, -1 * tangent2)
+        # )
+        # assert np.allclose(a, a2)
         alpha.append(a)
         tangents.append(tangent)
 
@@ -99,7 +98,7 @@ class DistDot(NamedTuple):
 class DotProps:
     def __init__(self, df, tree=None):
         self.df = df
-        self.kdtree = tree or cKDTree(self.points.to_numpy())
+        self.kdtree = tree or KDTree(self.points.to_numpy())
 
     def __len__(self):
         return len(self.df)
@@ -125,47 +124,74 @@ class DotProps:
     def alpha(self):
         return self.df.alpha
 
-    def dist_dots(self, other: DotProps):
+    def _fast_dist_dots(self, other: DotProps):
+        other_tangents = other.tangents.to_numpy()
+        self_points = self.points.to_numpy()
+        self_tangents = self.tangents.to_numpy()
+
+        fast_dists, fast_idxs = other.kdtree.query(self_points)
+        fast_tangents = other_tangents[fast_idxs]
+        fast_dotprods = np.abs((self_tangents * fast_tangents).sum(axis=1))
+        return [
+            DistDot(dist, dot) for dist, dot in zip(fast_dists, fast_dotprods)
+        ]
+
+    def _slow_dist_dots(self, other: DotProps):
         other_tangents = other.tangents
         out = []
         for q_point, q_tangent in zip(
             self.points.to_numpy(), self.tangents.to_numpy()
         ):
-            dists, idxs = other.kdtree.query(q_point, 1)
-            t_tangent = other_tangents.iloc[idxs.item()]
+            dist, idx = other.kdtree.query(q_point, 1)
+            t_tangent = other_tangents.iloc[idx]
             out.append(
-                DistDot(dists.item(), np.abs(np.dot(q_tangent, t_tangent)))
+                DistDot(dist, np.abs(np.dot(q_tangent, t_tangent)))
             )
         return out
+
+    def dist_dots(self, other: DotProps):
+        # slow = self._slow_dist_dots(other)
+        fast = self._fast_dist_dots(other)
+        return fast
 
 
 def parse_interval(s):
     return float(s.strip("([])").split(",")[-1])
 
 
+def intervals_to_bins(interval_strs):
+    breaks = [-np.inf]
+    for s in interval_strs:
+        upper = parse_interval(s)
+        breaks.append(upper)
+
+    breaks[-1] = np.inf
+    return np.array(breaks, float)
+
+
 def csv_to_score_fn(fpath):
     df = pd.read_csv(fpath, index_col=0)
-    cells = df.to_numpy()
-    dist_thresholds = [parse_interval(x) for x in df.index]
-    dot_thresholds = [parse_interval(x) for x in df.columns]
-    return table_to_score_fn(dist_thresholds, dot_thresholds, cells)
+    return table_to_score_fn(
+        [parse_interval(s) for s in df.index],
+        [parse_interval(s) for s in df.columns],
+        df.to_numpy(),
+    )
 
 
 def table_to_score_fn(dist_thresholds, dot_thresholds, cells):
-    def fn(dist, dot):
-        dist_idx = 0
-        for dist_idx, dist_thresh in enumerate(dist_thresholds):
-            if dist < dist_thresh:
-                break
-        # else:
-        #     # don't bother matching distant points
-        #     return 0
+    dist_thresholds = list(dist_thresholds)
+    dist_thresholds[-1] = np.inf
+    dist_bins = np.array(dist_thresholds, float)
 
-        dot_idx = 0
-        for dot_idx, dot_thresh in enumerate(dot_thresholds):
-            if dot < dot_thresh:
-                break
-        return cells[dist_idx, dot_idx]
+    dot_thresholds = list(dot_thresholds)
+    dot_thresholds[-1] = np.inf
+    dot_bins = np.array(dot_thresholds, float)
+
+    def fn(dist, dot):
+        return cells[
+            np.digitize(dist, dist_bins),
+            np.digitize(dot, dot_bins),
+        ]
 
     return fn
 
@@ -193,9 +219,6 @@ class Nblaster:
         for dd in self.dotprops[q_idx].dist_dots(self.dotprops[t_idx]):
             this_score = self.score_fn(dd.dist, dd.dot)
             score += this_score
-            print(json.dumps(
-                {"dist": dd.dist, "dot": dd.dot, "score": this_score}
-            ))
 
         if normalized:
             score /= self.self_hit(q_idx)
