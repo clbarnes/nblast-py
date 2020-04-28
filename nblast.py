@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 from __future__ import annotations
 from pathlib import Path
-from typing import NamedTuple
 
 import numpy as np
 from tqdm import trange
@@ -90,11 +89,6 @@ def make_dotprops(df: pd.DataFrame, k=N_NEIGHBORS):
     return new_df, tree
 
 
-class DistDot(NamedTuple):
-    dist: float
-    dot: float
-
-
 class DotProps:
     def __init__(self, df, tree=None):
         self.df = df
@@ -132,27 +126,10 @@ class DotProps:
         fast_dists, fast_idxs = other.kdtree.query(self_points)
         fast_tangents = other_tangents[fast_idxs]
         fast_dotprods = np.abs((self_tangents * fast_tangents).sum(axis=1))
-        return [
-            DistDot(dist, dot) for dist, dot in zip(fast_dists, fast_dotprods)
-        ]
-
-    def _slow_dist_dots(self, other: DotProps):
-        other_tangents = other.tangents
-        out = []
-        for q_point, q_tangent in zip(
-            self.points.to_numpy(), self.tangents.to_numpy()
-        ):
-            dist, idx = other.kdtree.query(q_point, 1)
-            t_tangent = other_tangents.iloc[idx]
-            out.append(
-                DistDot(dist, np.abs(np.dot(q_tangent, t_tangent)))
-            )
-        return out
+        return fast_dists, fast_dotprods
 
     def dist_dots(self, other: DotProps):
-        # slow = self._slow_dist_dots(other)
-        fast = self._fast_dist_dots(other)
-        return fast
+        return self._fast_dist_dots(other)
 
 
 def parse_interval(s):
@@ -216,17 +193,16 @@ class Nblaster:
             return self.self_hit(q_idx)
 
         score = 0
-        for dd in self.dotprops[q_idx].dist_dots(self.dotprops[t_idx]):
-            this_score = self.score_fn(dd.dist, dd.dot)
-            score += this_score
+        dists, dots = self.dotprops[q_idx].dist_dots(self.dotprops[t_idx])
+        score = self.score_fn(dists, dots).sum()
 
         if normalized:
             score /= self.self_hit(q_idx)
         if symmetric:
-            backward = sum(
-                self.score_fn(*dd)
-                for dd in self.dotprops[t_idx].dist_dots(self.dotprops[q_idx])
+            b_dists, b_dots = self.dotprops[t_idx].dist_dots(
+                self.dotprops[q_idx]
             )
+            backward = self.score_fn(b_dists, b_dots).sum()
             if normalized:
                 backward /= self.self_hit(t_idx)
             score = (score + backward) / 2

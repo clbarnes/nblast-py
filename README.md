@@ -7,8 +7,7 @@ and implemented
 by the Jefferis lab), for experimentation purposes.
 Written for python 3.8.
 
-Not intended for use in production; it's slow.
-For a high-performance NBLAST library with python bindings, see [nblast-rs](https://github.com/clbarnes/nblast-rs), WIP.
+For a faster, more feature-filled NBLAST library with python bindings, see [nblast-rs](https://github.com/clbarnes/nblast-rs).
 
 ## Test data
 
