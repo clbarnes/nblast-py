@@ -7,7 +7,7 @@ import json
 import numpy as np
 from tqdm import trange
 import pandas as pd
-from scipy.spatial import KDTree
+from scipy.spatial import cKDTree
 
 DOTPROPS = Path("data/dotprops")
 fpaths = sorted(DOTPROPS.glob("*.csv"))
@@ -66,7 +66,7 @@ def make_tan_alpha_svd(neighbors):
 def make_dotprops(df: pd.DataFrame, k=N_NEIGHBORS):
     point_headers = ["point_" + dim for dim in "xyz"]
     points = df[point_headers].to_numpy()
-    tree = KDTree(points)
+    tree = cKDTree(points)
     alpha = []
     tangents = []
     for idx, row in enumerate(points):
@@ -99,7 +99,7 @@ class DistDot(NamedTuple):
 class DotProps:
     def __init__(self, df, tree=None):
         self.df = df
-        self.kdtree = tree or KDTree(self.points.to_numpy())
+        self.kdtree = tree or cKDTree(self.points.to_numpy())
 
     def __len__(self):
         return len(self.df)
